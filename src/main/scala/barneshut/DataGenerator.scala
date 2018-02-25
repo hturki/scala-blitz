@@ -2,7 +2,6 @@ package barneshut
 
 import java.io.File
 import java.io.PrintWriter
-import scala.collection.par._
 
 object DataGenerator {
   self =>

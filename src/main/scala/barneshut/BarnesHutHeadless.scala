@@ -1,8 +1,11 @@
-package org.scala.optimized.test.examples
+package barneshut
 
-import scala.collection.parallel._
-import scala.collection.par._
+import java.io.{File, PrintWriter}
+
 import scala.collection.mutable.ArrayBuffer
+import scala.collection.par._
+import scala.collection.parallel._
+import scala.io.Source
 import scala.reflect.ClassTag
 
 object BarnesHutHeadless {
@@ -35,11 +38,11 @@ object BarnesHutHeadless {
   object Quad {
     case class Body(val id: Int)(val x: Float, val y: Float, val xspeed: Float, val yspeed: Float, val mass: Float, var index: Int)
     extends Quad {
-  
+
       def massX = x
       def massY = y
       def total = 1
-  
+
       def update(fromx: Float, fromy: Float, sz: Float, b: Body, depth: Int) = {
         assert(depth < 100, s"$fromx, $fromy, $sz; this: ${this.x}, ${this.y}, that: ${b.x}, ${b.y}")
         val cx = fromx + sz / 2
@@ -109,7 +112,7 @@ object BarnesHutHeadless {
 
       def update(fromx: Float, fromy: Float, sz: Float, b: Body, depth: Int) = b
     }
-  
+
     case class Fork(val centerX: Float, val centerY: Float, val size: Float)(var nw: Quad, var ne: Quad, var sw: Quad, var se: Quad)
     extends Quad {
       var massX: Float = _
@@ -177,8 +180,6 @@ object BarnesHutHeadless {
     }
 
   }
-
-  val debug = new java.util.concurrent.ConcurrentLinkedQueue[Quad.Body]
 
   class Boundaries extends Accumulator[Quad.Body, Boundaries] {
     var minX = Float.MaxValue
@@ -272,7 +273,7 @@ object BarnesHutHeadless {
       pibs.tasksupport = tasksupport
       pibs.map(bi => sectorToQuad(sectors.boundaries, bi._1, bi._2)).seq.toArray
     }
-    
+
     // bind into a quad tree
     var level = sectorPrecision
     while (level > 1) {
@@ -311,18 +312,12 @@ object BarnesHutHeadless {
     quad
   }
 
-  def parallelism = {
-    16
-  }
-
-  def totalBodies = 10000
-
   var useWsTree = true
 
   def sectorPrecision = 16
 
   def delta = 0.1f
-  
+
   def theta = 0.5f
 
   def eliminationThreshold = 8.0f
@@ -331,43 +326,25 @@ object BarnesHutHeadless {
 
   def gee = 100.0f
 
-  def init() {
+  def init(inputFile: String) {
     initScheduler()
-    initBodies()
+    initBodies(inputFile)
   }
 
-  def initBodies() {
-    init2Galaxies()
-  }
+  def initBodies(inputFile: String) {
+    val bufferedSource = Source.fromFile(inputFile)
+    bodies = bufferedSource.getLines().map(line => {
+      val split = line.split(",")
+      val i = split(0).toInt
+      val x = split(1).toFloat
+      val y = split(2).toFloat
+      val xspeed = split(3).toFloat
+      val yspeed = split(4).toFloat
+      val mass = split(5).toFloat
+      new Quad.Body(i)(x, y, xspeed, yspeed, mass, i)
+    }).toArray
 
-  def init2Galaxies() {
-    bodies = new Array(totalBodies)
-    val random = new scala.util.Random(213L)
-
-    def galaxy(from: Int, num: Int, maxradius: Float, cx: Float, cy: Float, sx: Float, sy: Float) {
-      val totalM = 1.5f * num
-      val blackHoleM = 1.0f * num
-      val cubmaxradius = maxradius * maxradius * maxradius
-      for (i <- from until (from + num)) {
-        val b = if (i == from) {
-          new Quad.Body(i)(cx, cy, sx, sy, blackHoleM, i)
-        } else {
-          val angle = random.nextFloat * 2 * math.Pi
-          val radius = 25 + maxradius * random.nextFloat
-          val starx = cx + radius * math.sin(angle).toFloat
-          val stary = cy + radius * math.cos(angle).toFloat
-          val speed = math.sqrt(gee * blackHoleM / radius + gee * totalM * radius * radius / cubmaxradius)
-          val starspeedx = sx + (speed * math.sin(angle + math.Pi / 2)).toFloat
-          val starspeedy = sy + (speed * math.cos(angle + math.Pi / 2)).toFloat
-          val starmass = 1.0f + 1.0f * random.nextFloat
-          new Quad.Body(i)(starx, stary, starspeedx, starspeedy, starmass, i)
-        }
-        bodies(i) = b
-      }
-    }
-
-    galaxy(0, bodies.length / 8, 300.0f, 0.0f, 0.0f, 0.0f, 0.0f)
-    galaxy(bodies.length / 8, bodies.length / 8 * 7, 350.0f, -1800.0f, -1200.0f, 0.0f, 0.0f)
+    bufferedSource.close
 
     // compute center and boundaries
     initialBoundaries = bodies.toPar.accumulate(new Boundaries)(scheduler)
@@ -375,7 +352,7 @@ object BarnesHutHeadless {
   }
 
   def initScheduler() {
-    val p = parallelism
+    val p = Runtime.getRuntime.availableProcessors
     val conf = new Scheduler.Config.Default(p)
     scheduler = new Scheduler.ForkJoin(conf)
     tasksupport = new collection.parallel.ForkJoinTaskSupport(new scala.concurrent.forkjoin.ForkJoinPool(p))
@@ -489,7 +466,22 @@ object BarnesHutHeadless {
   }
 
   def main(args: Array[String]) {
-    init()
+    init(args(0))
+
+    if (args.length == 3) {
+      val writer = new PrintWriter(new File(args(2)).toPath.resolve("0.csv").toFile)
+      bodies.foreach(b => writer.write(s"${b.index},${b.x},${b.y},${b.xspeed},${b.yspeed},${b.mass}\n"))
+      writer.close()
+    }
+
+    for (i <- 0 until args(1).toInt) {
+      step()(scheduler)
+      if (args.length == 3) {
+        val writer = new PrintWriter(new File(args(2)).toPath.resolve(s"${i + 1}.csv").toFile)
+        bodies.foreach(b => writer.write(s"${b.index},${b.x},${b.y},${b.xspeed},${b.yspeed}\n"))
+        writer.close()
+      }
+    }
   }
 
 }
