@@ -476,7 +476,9 @@ object BarnesHutHeadless {
     }
 
     for (i <- 0 until args(1).toInt) {
+      val iterStart = System.currentTimeMillis()
       step()(scheduler)
+      println(s"Iteration time: ${System.currentTimeMillis() - iterStart} ms")
       if (args.length == 3) {
         val writer = new PrintWriter(new File(args(2)).toPath.resolve(s"${i + 1}.csv").toFile)
         bodies.foreach(b => writer.write(s"${b.index},${b.x},${b.y},${b.xspeed},${b.yspeed}\n"))
