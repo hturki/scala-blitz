@@ -466,6 +466,7 @@ object BarnesHutHeadless {
   }
 
   def main(args: Array[String]) {
+    val start = System.currentTimeMillis()
     init(args(0))
 
     if (args.length == 3) {
@@ -482,6 +483,8 @@ object BarnesHutHeadless {
         writer.close()
       }
     }
+
+    println(s"Total time: ${System.currentTimeMillis() - start} ms")
   }
 
 }
