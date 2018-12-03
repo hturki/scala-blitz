@@ -1,17 +1,12 @@
 package org.scala.optimized.test.examples
 
+import java.io.{File, PrintWriter}
 
-
-import java.awt._
-import java.awt.event._
-import javax.swing._
-import javax.swing.event._
-import scala.collection.parallel._
-import scala.collection.par._
 import scala.collection.mutable.ArrayBuffer
+import scala.collection.par._
+import scala.collection.parallel._
+import scala.io.Source
 import scala.reflect.ClassTag
-
-
 
 object BarnesHut {
   self =>
@@ -43,11 +38,11 @@ object BarnesHut {
   object Quad {
     case class Body(val id: Int)(val x: Float, val y: Float, val xspeed: Float, val yspeed: Float, val mass: Float, var index: Int)
     extends Quad {
-  
+
       def massX = x
       def massY = y
       def total = 1
-  
+
       def update(fromx: Float, fromy: Float, sz: Float, b: Body, depth: Int) = {
         assert(depth < 100, s"$fromx, $fromy, $sz; this: ${this.x}, ${this.y}, that: ${b.x}, ${b.y}")
         val cx = fromx + sz / 2
@@ -117,7 +112,7 @@ object BarnesHut {
 
       def update(fromx: Float, fromy: Float, sz: Float, b: Body, depth: Int) = b
     }
-  
+
     case class Fork(val centerX: Float, val centerY: Float, val size: Float)(var nw: Quad, var ne: Quad, var sw: Quad, var se: Quad)
     extends Quad {
       var massX: Float = _
@@ -185,8 +180,6 @@ object BarnesHut {
     }
 
   }
-
-  val debug = new java.util.concurrent.ConcurrentLinkedQueue[Quad.Body]
 
   class Boundaries extends Accumulator[Quad.Body, Boundaries] {
     var minX = Float.MaxValue
@@ -280,7 +273,7 @@ object BarnesHut {
       pibs.tasksupport = tasksupport
       pibs.map(bi => sectorToQuad(sectors.boundaries, bi._1, bi._2)).seq.toArray
     }
-    
+
     // bind into a quad tree
     var level = sectorPrecision
     while (level > 1) {
@@ -319,19 +312,12 @@ object BarnesHut {
     quad
   }
 
-  def parallelism = {
-    val selidx = frame.parcombo.getSelectedIndex
-    frame.parcombo.getItemAt(selidx).toInt
-  }
-
-  def totalBodies = frame.bodiesSpinner.getValue.asInstanceOf[Int]
-
   var useWsTree = true
 
   def sectorPrecision = 16
 
   def delta = 0.1f
-  
+
   def theta = 0.5f
 
   def eliminationThreshold = 8.0f
@@ -340,43 +326,25 @@ object BarnesHut {
 
   def gee = 100.0f
 
-  def init() {
+  def init(inputFile: String) {
     initScheduler()
-    initBodies()
+    initBodies(inputFile)
   }
 
-  def initBodies() {
-    init2Galaxies()
-  }
+  def initBodies(inputFile: String) {
+    val bufferedSource = Source.fromFile(inputFile)
+    bodies = bufferedSource.getLines().map(line => {
+      val split = line.split(",")
+      val i = split(0).toInt
+      val x = split(1).toFloat
+      val y = split(2).toFloat
+      val xspeed = split(3).toFloat
+      val yspeed = split(4).toFloat
+      val mass = split(5).toFloat
+      new Quad.Body(i)(x, y, xspeed, yspeed, mass, i)
+    }).toArray
 
-  def init2Galaxies() {
-    bodies = new Array(totalBodies)
-    val random = new scala.util.Random(213L)
-
-    def galaxy(from: Int, num: Int, maxradius: Float, cx: Float, cy: Float, sx: Float, sy: Float) {
-      val totalM = 1.5f * num
-      val blackHoleM = 1.0f * num
-      val cubmaxradius = maxradius * maxradius * maxradius
-      for (i <- from until (from + num)) {
-        val b = if (i == from) {
-          new Quad.Body(i)(cx, cy, sx, sy, blackHoleM, i)
-        } else {
-          val angle = random.nextFloat * 2 * math.Pi
-          val radius = 25 + maxradius * random.nextFloat
-          val starx = cx + radius * math.sin(angle).toFloat
-          val stary = cy + radius * math.cos(angle).toFloat
-          val speed = math.sqrt(gee * blackHoleM / radius + gee * totalM * radius * radius / cubmaxradius)
-          val starspeedx = sx + (speed * math.sin(angle + math.Pi / 2)).toFloat
-          val starspeedy = sy + (speed * math.cos(angle + math.Pi / 2)).toFloat
-          val starmass = 1.0f + 1.0f * random.nextFloat
-          new Quad.Body(i)(starx, stary, starspeedx, starspeedy, starmass, i)
-        }
-        bodies(i) = b
-      }
-    }
-
-    galaxy(0, bodies.length / 8, 300.0f, 0.0f, 0.0f, 0.0f, 0.0f)
-    galaxy(bodies.length / 8, bodies.length / 8 * 7, 350.0f, -1800.0f, -1200.0f, 0.0f, 0.0f)
+    bufferedSource.close
 
     // compute center and boundaries
     initialBoundaries = bodies.toPar.accumulate(new Boundaries)(scheduler)
@@ -384,7 +352,7 @@ object BarnesHut {
   }
 
   def initScheduler() {
-    val p = parallelism
+    val p = Runtime.getRuntime.availableProcessors
     val conf = new Scheduler.Config.Default(p)
     scheduler = new Scheduler.ForkJoin(conf)
     tasksupport = new collection.parallel.ForkJoinTaskSupport(new scala.concurrent.forkjoin.ForkJoinPool(p))
@@ -412,7 +380,6 @@ object BarnesHut {
     val text = timeMap map {
       case (k, (total, num)) => k + ": " + (total / num * 100).toInt / 100.0 + " ms"
     } mkString("\n")
-    frame.info.setText(text)
   }
 
   def step()(implicit s: Scheduler): Unit = self.synchronized {
@@ -498,221 +465,28 @@ object BarnesHut {
     updateInfo()
   }
 
-  class BarnesHutFrame extends JFrame("Barnes-Hut") {
-    setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE)
-    setSize(1024, 600)
-    setLayout(new BorderLayout)
-    val rightpanel = new JPanel
-    rightpanel.setBorder(BorderFactory.createEtchedBorder(border.EtchedBorder.LOWERED))
-    add(rightpanel, BorderLayout.EAST)
-    val controls = new JPanel
-    controls.setLayout(new GridLayout(0, 2))
-    rightpanel.add(controls, BorderLayout.NORTH)
-    val implLabel = new JLabel("Implementation")
-    controls.add(implLabel)
-    val implcombo = new JComboBox[String](Array("Workstealing tree", "Classic parallel collections"))
-    implcombo.addActionListener(new ActionListener {
-      def actionPerformed(e: ActionEvent) = self.synchronized {
-        if (frame.implcombo.getSelectedItem == "Workstealing tree") useWsTree = true
-        else useWsTree = false
-        canvas.repaint()
-      }
-    })
-    controls.add(implcombo)
-    val parallelismLabel = new JLabel("Parallelism")
-    controls.add(parallelismLabel)
-    val items = 1 to Runtime.getRuntime.availableProcessors map { _.toString } toArray
-    val parcombo = new JComboBox[String](items)
-    parcombo.setSelectedIndex(items.length - 1)
-    parcombo.addActionListener(new ActionListener {
-      def actionPerformed(e: ActionEvent) = self.synchronized {
-        initScheduler()
-        canvas.repaint()
-      }
-    })
-    controls.add(parcombo)
-    val bodiesLabel = new JLabel("Total bodies")
-    controls.add(bodiesLabel)
-    val bodiesSpinner = new JSpinner(new SpinnerNumberModel(25000, 4000, 1000000, 1000))
-    bodiesSpinner.addChangeListener(new ChangeListener {
-      def stateChanged(e: ChangeEvent) = self.synchronized {
-        if (frame != null) {
-          init()
-          canvas.repaint()
-        }
-      }
-    })
-    controls.add(bodiesSpinner)
-    val quadcheckbox = new JCheckBox("Show quad")
-    quadcheckbox.addActionListener(new ActionListener {
-      def actionPerformed(e: ActionEvent) {
-        repaint()
-      }
-    })
-    controls.add(quadcheckbox)
-    val animationPanel = new JPanel
-    animationPanel.setLayout(new GridLayout(1, 0))
-    controls.add(animationPanel)
-    val stepbutton = new JButton("Step")
-    stepbutton.addActionListener(new ActionListener {
-      def actionPerformed(e: ActionEvent) {
-        step()(scheduler)
-        repaint()
-      }
-    })
-    animationPanel.add(stepbutton)
-    val startButton = new JCheckBox("Start")
-    val startTimer = new javax.swing.Timer(0, new ActionListener {
-      def actionPerformed(e: ActionEvent) {
-        step()(scheduler)
-        repaint()
-      }
-    })
-    startButton.addActionListener(new ActionListener {
-      def actionPerformed(e: ActionEvent) {
-        if (startButton.isSelected) startTimer.start()
-        else startTimer.stop()
-      }
-    })
-    animationPanel.add(startButton)
-    val clearButton = new JButton("Clear")
-    clearButton.addActionListener(new ActionListener {
-      def actionPerformed(e: ActionEvent) {
-        timeMap.clear()
-      }
-    })
-    controls.add(clearButton)
-    val info = new JTextArea("")
-    controls.add(info)
-    val canvas = new JComponent {
-      val pixels = new Array[Int](4000 * 4000)
-      override def paintComponent(gcan: Graphics) = self.synchronized {
-        super.paintComponent(gcan)
-        val width = getWidth
-        val height = getHeight
-        if (initialBoundaries != null) {
-          val img = new image.BufferedImage(width, height, image.BufferedImage.TYPE_INT_ARGB)
-          for (x <- 0 until 4000; y <- 0 until 4000) pixels(y * width + x) = 0
-          for (b <- bodies) {
-            val px = ((b.x - initialBoundaries.minX) / initialBoundaries.width * width).toInt
-            val py = ((b.y - initialBoundaries.minY) / initialBoundaries.height * height).toInt
-            if (px >= 0 && px < width && py >= 0 && py < height) pixels(py * width + px) += 1
-          }
-          for (y <- 0 until height; x <- 0 until width) {
-            val factor = 1.0 * bodies.length / math.sqrt(width * height)
-            val intensity = pixels(y * width + x) / factor * 6000
-            val bound = math.min(255, intensity.toInt)
-            val color = (255 << 24) | (bound << 16) | (bound << 8) | bound
-            img.setRGB(x, y, color)
-          }
-          val g = img.getGraphics.asInstanceOf[Graphics2D]
-          g.setColor(Color.GRAY)
-          if (bodies.length < 20) for (b <- bodies) {
-            val px = ((b.x - initialBoundaries.minX) / initialBoundaries.width * width).toInt
-            val py = ((b.y - initialBoundaries.minY) / initialBoundaries.height * height).toInt
-            if (px >= 0 && px < width && py >= 0 && py < height) {
-              def r(x: Float) = (x * 100).toInt / 100.0f
-              g.drawString(s"${r(b.x)}, ${r(b.y)}", px, py)
-            }
-          }
-          if (quadcheckbox.isSelected && quadtree != null) {
-            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            val green = new Color(0, 225, 80, 150)
-            val red = new Color(200, 0, 0, 150)
-            g.setColor(green)
-            def drawQuad(depth: Int, quad: Quad): Unit = {
-              def drawRect(fx: Float, fy: Float, fsz: Float, q: Quad, fill: Boolean = false) {
-                val x = ((fx - initialBoundaries.minX) / initialBoundaries.width * width).toInt
-                val y = ((fy - initialBoundaries.minY) / initialBoundaries.height * height).toInt
-                val w = ((fx + fsz - initialBoundaries.minX) / initialBoundaries.width * width).toInt - x
-                val h = ((fy + fsz - initialBoundaries.minY) / initialBoundaries.height * height).toInt - y
-                g.drawRect(x, y, w, h)
-                if (fill) g.fillRect(x, y, w, h)
-                if (depth <= 5) g.drawString("#:" + q.total, x + w / 2, y + h / 2)
-              }
-              quad match {
-                case f @ Quad.Fork(cx, cy, sz) =>
-                  drawRect(cx - sz / 2, cy - sz / 2, sz / 2, f.nw)
-                  drawRect(cx - sz / 2, cy, sz / 2, f.sw)
-                  drawRect(cx, cy - sz / 2, sz / 2, f.ne)
-                  drawRect(cx, cy, sz / 2, f.se)
-                  drawQuad(depth + 1, f.nw)
-                  drawQuad(depth + 1, f.ne)
-                  drawQuad(depth + 1, f.sw)
-                  drawQuad(depth + 1, f.se)
-                case Quad.Bunch(cx, cy, sz) =>
-                  // done
-                case Quad.Empty | Quad.Body(_) =>
-                  // done
-              }
-            }
-            drawQuad(0, quadtree)
-          }
-          gcan.drawImage(img, 0, 0, null)
-        }
-      }
-      addMouseWheelListener(new MouseAdapter {
-        override def mouseWheelMoved(e: MouseWheelEvent) {
-          val rot = e.getWheelRotation
-          val cx = initialBoundaries.centerX
-          val cy = initialBoundaries.centerY
-          val w = initialBoundaries.width
-          val h = initialBoundaries.height
-          val b = new Boundaries
-          if (rot < 0) {
-            b.minX = cx - w / 2.2f
-            b.minY = cx - h / 2.2f
-            b.maxX = cx + w / 2.2f
-            b.maxY = cx + h / 2.2f
-          } else {
-            b.minX = cx - w * 0.6f
-            b.minY = cx - h * 0.6f
-            b.maxX = cx + w * 0.6f
-            b.maxY = cx + h * 0.6f
-          }
-          initialBoundaries = b
-          repaint()
-        }
-      })
-      var xlast = -1
-      var ylast = -1
-      addMouseListener(new MouseAdapter {
-        override def mousePressed(e: MouseEvent) {
-          xlast = -1
-          ylast = -1
-        }
-      })
-      addMouseMotionListener(new MouseMotionAdapter {
-        override def mouseDragged(e: MouseEvent) {
-          val xcurr = e.getX
-          val ycurr = e.getY
-          if (xlast != -1) {
-            val xd = xcurr - xlast
-            val yd = ycurr - ylast
-            val b = new Boundaries
-            val cx = initialBoundaries.centerX - xd * initialBoundaries.width / 1000
-            val cy = initialBoundaries.centerY - yd * initialBoundaries.height / 1000
-            b.minX = cx - initialBoundaries.width / 2
-            b.minY = cy - initialBoundaries.height / 2
-            b.maxX = cx + initialBoundaries.width / 2
-            b.maxY = cy + initialBoundaries.height / 2
-            initialBoundaries = b
-          }
-          xlast = xcurr
-          ylast = ycurr
-          repaint()
-        }
-      })
-    }
-    add(canvas)
-    setVisible(true)
-  }
-
-  val frame = new BarnesHutFrame
-
   def main(args: Array[String]) {
-    init()
-    frame.repaint()
+    val start = System.currentTimeMillis()
+    init(args(0))
+
+    if (args.length == 3) {
+      val writer = new PrintWriter(new File(args(2)).toPath.resolve("0.csv").toFile)
+      bodies.foreach(b => writer.write(s"${b.index},${b.x},${b.y},${b.xspeed},${b.yspeed},${b.mass}\n"))
+      writer.close()
+    }
+
+    for (i <- 0 until args(1).toInt) {
+      val iterStart = System.currentTimeMillis()
+      step()(scheduler)
+      println(s"Iteration time: ${System.currentTimeMillis() - iterStart} ms")
+      if (args.length == 3) {
+        val writer = new PrintWriter(new File(args(2)).toPath.resolve(s"${i + 1}.csv").toFile)
+        bodies.foreach(b => writer.write(s"${b.index},${b.x},${b.y},${b.xspeed},${b.yspeed}\n"))
+        writer.close()
+      }
+    }
+
+    println(s"Total time: ${System.currentTimeMillis() - start} ms")
   }
 
 }
